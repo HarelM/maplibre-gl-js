@@ -78,9 +78,8 @@ export type QueryIntersectsFeatureParams = {
     getElevation: undefined | ((x: number, y: number) => number);
 };
 
-// Error message constants for property type mismatches
-const ERR_PAINT_NOT_LAYOUT = (n: string) => `${n} is a PAINT property not a LAYOUT property. Use get/setPaintProperty instead?`;
-const ERR_LAYOUT_NOT_PAINT = (n: string) => `${n} is a LAYOUT property not a PAINT property. Use get/setLayoutProperty instead?`;
+const ERR_PAINT_NOT_LAYOUT = ' is a PAINT property not a LAYOUT property. Use get/setPaintProperty instead?';
+const ERR_LAYOUT_NOT_PAINT = ' is a LAYOUT property not a PAINT property. Use get/setLayoutProperty instead?';
 
 /**
  * A base class for style layers
@@ -180,7 +179,7 @@ export abstract class StyleLayer extends Evented {
             return this.visibility;
         }
         if (this._transitionablePaint && name in this._transitionablePaint._properties.defaultTransitionablePropertyValues) {
-            throw new Error(ERR_PAINT_NOT_LAYOUT(name));
+            throw new Error(name + ERR_PAINT_NOT_LAYOUT);
         }
         if (!this._unevaluatedLayout) {
             throw new Error(`Cannot get layout property "${name}" on layer type "${this.type}" which has no layout properties.`);
@@ -257,7 +256,7 @@ export abstract class StyleLayer extends Evented {
         }
 
         if (this._transitionablePaint && name in this._transitionablePaint._properties.defaultTransitionablePropertyValues) {
-            this.fire(new ErrorEvent(new Error(ERR_PAINT_NOT_LAYOUT(name))));
+            this.fire(new ErrorEvent(new Error(name + ERR_PAINT_NOT_LAYOUT)));
             return;
         }
 
@@ -270,12 +269,12 @@ export abstract class StyleLayer extends Evented {
         if (name.endsWith(TRANSITION_SUFFIX)) {
             const baseName = name.slice(0, -TRANSITION_SUFFIX.length);
             if (baseName === 'visibility' || (this._unevaluatedLayout && baseName in this._unevaluatedLayout._properties.properties)) {
-                throw new Error(ERR_LAYOUT_NOT_PAINT(name));
+                throw new Error(name + ERR_LAYOUT_NOT_PAINT);
             }
             return this._transitionablePaint.getTransition(baseName);
         } else {
             if (name === 'visibility' || (this._unevaluatedLayout && name in this._unevaluatedLayout._properties.properties)) {
-                throw new Error(ERR_LAYOUT_NOT_PAINT(name));
+                throw new Error(name + ERR_LAYOUT_NOT_PAINT);
             }
             return this._transitionablePaint.getValue(name);
         }
@@ -283,7 +282,7 @@ export abstract class StyleLayer extends Evented {
 
     setPaintProperty(name: string, value: unknown, options: StyleSetterOptions = {}) {
         if (name === 'visibility' || (this._unevaluatedLayout && name in this._unevaluatedLayout._properties.properties)) {
-            this.fire(new ErrorEvent(new Error(ERR_LAYOUT_NOT_PAINT(name))));
+            this.fire(new ErrorEvent(new Error(name + ERR_LAYOUT_NOT_PAINT)));
             return false;
         }
 
