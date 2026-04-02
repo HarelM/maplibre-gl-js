@@ -25,7 +25,7 @@ type ClearArgs = {
 
 /**
  * @internal
- * A webgl wrapper class to allow injection, mocking and abstaction
+ * A webgl wrapper class to allow injection, mocking and abstraction
  */
 export class Context {
     gl: WebGLRenderingContext | WebGL2RenderingContext;
@@ -105,11 +105,7 @@ export class Context {
         this.pixelStoreUnpackPremultiplyAlpha = new PixelStoreUnpackPremultiplyAlpha(this);
         this.pixelStoreUnpackFlipY = new PixelStoreUnpackFlipY(this);
 
-        this.extTextureFilterAnisotropic = (
-            gl.getExtension('EXT_texture_filter_anisotropic') ||
-            gl.getExtension('MOZ_EXT_texture_filter_anisotropic') ||
-            gl.getExtension('WEBKIT_EXT_texture_filter_anisotropic')
-        );
+        this.extTextureFilterAnisotropic = gl.getExtension('EXT_texture_filter_anisotropic');
 
         if (this.extTextureFilterAnisotropic) {
             this.extTextureFilterAnisotropicMax = gl.getParameter(this.extTextureFilterAnisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT);

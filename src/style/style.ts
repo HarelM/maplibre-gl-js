@@ -420,24 +420,25 @@ export class Style extends Evented {
         }
     }
 
-    loadURL(url: string, options: StyleSwapOptions & StyleSetterOptions = {}, previousStyle?: StyleSpecification) {
+    async loadURL(url: string, options: StyleSwapOptions & StyleSetterOptions = {}, previousStyle?: StyleSpecification) {
         this.fire(new Event('dataloading', {dataType: 'style'}));
 
         options.validate = typeof options.validate === 'boolean' ?
             options.validate : true;
 
-        const request = this.map._requestManager.transformRequest(url, ResourceType.Style);
+        const request = await this.map._requestManager.transformRequest(url, ResourceType.Style);
         this._loadStyleRequest = new AbortController();
         const abortController = this._loadStyleRequest;
-        getJSON<StyleSpecification>(request, this._loadStyleRequest).then((response) => {
+        try {
+            const response = await getJSON<StyleSpecification>(request, this._loadStyleRequest);
             this._loadStyleRequest = null;
             this._load(response.data, options, previousStyle);
-        }).catch((error) => {
+        } catch (error) {
             this._loadStyleRequest = null;
             if (error && !abortController.signal.aborted) { // ignore abort
                 this.fire(new ErrorEvent(error));
             }
-        });
+        }
     }
 
     loadJSON(json: StyleSpecification, options: StyleSetterOptions & StyleSwapOptions = {}, previousStyle?: StyleSpecification) {
@@ -1035,7 +1036,7 @@ export class Style extends Evented {
         this._checkLoaded();
 
         if (this.tileManagers[id] === undefined) {
-            throw new Error('There is no source with this ID');
+            throw new Error(`There is no source with this ID=${id}`);
         }
         for (const layerId in this._layers) {
             if (this._layers[layerId].source === id) {
@@ -1684,13 +1685,16 @@ export class Style extends Evented {
 
     setProjection(projection: ProjectionSpecification) {
         this._checkLoaded();
+        const resolvedProjection = projection ?? {type: 'mercator'};
+        this.stylesheet.projection = projection;
         if (this.projection) {
-            if (this.projection.name === projection.type) return;
+            if (this.projection.name === resolvedProjection.type) {
+                return;
+            }
             this.projection.destroy();
             delete this.projection;
         }
-        this.stylesheet.projection = projection;
-        this._setProjectionInternal(projection.type);
+        this._setProjectionInternal(resolvedProjection.type);
     }
 
     getSky(): SkySpecification {

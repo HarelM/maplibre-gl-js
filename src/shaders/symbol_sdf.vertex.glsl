@@ -53,7 +53,8 @@ void main() {
     vec2 a_size = a_data.zw;
 
     float a_size_min = floor(a_size[0] * 0.5);
-    vec2 a_pxoffset = a_pixeloffset.xy;
+    vec2 a_pxoffset = a_pixeloffset.xy / 16.0;
+    vec2 a_minFontScale = a_pixeloffset.zw / 256.0;
 
     float ele = get_elevation(a_pos);
     highp float segment_angle = -a_projected_pos[2];
@@ -69,6 +70,18 @@ void main() {
 
     vec2 translated_a_pos = a_pos + u_translation;
     vec4 projectedPoint = projectTileWithElevation(translated_a_pos, ele);
+
+    // compute opacity and visibility:
+    vec2 fade_opacity = unpack_opacity(a_fade_opacity);
+    float visibility = calculate_visibility(projectedPoint);
+    float fade_change = fade_opacity[1] > 0.5 ? u_fade_change : -u_fade_change;
+    float interpolated_fade_opacity = max(0.0, min(visibility, fade_opacity[0] + fade_change));
+
+    float total_opacity = opacity * interpolated_fade_opacity;
+    if (total_opacity < 0.1){
+        gl_Position = vec4(-2., -2., -2., 1.);
+        return;
+    }
 
     highp float camera_to_anchor_distance = projectedPoint.w;
     // If the label is pitched with the map, layout is done in pitched space,
@@ -107,7 +120,7 @@ void main() {
     mat2 rotation_matrix = mat2(angle_cos, -1.0 * angle_sin, angle_sin, angle_cos);
 
     vec4 projected_pos;
-    if (u_is_along_line || u_is_variable_anchor) {  
+    if (u_is_along_line || u_is_variable_anchor) {
         // Label plane matrix is identity in this case
         projected_pos = vec4(a_projected_pos.xy, ele, 1.0);
     } else if (u_pitch_with_map) {
@@ -126,18 +139,13 @@ void main() {
     }
 #endif
 
-    vec4 finalPos = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * fontScale + a_pxoffset) * projectionScaling, z, 1.0);
+    vec4 finalPos = u_coord_matrix * vec4(projected_pos.xy / projected_pos.w + rotation_matrix * (a_offset / 32.0 * max(a_minFontScale, fontScale) + a_pxoffset) * projectionScaling, z, 1.0);
     if(u_pitch_with_map) {
         finalPos = projectTileWithElevation(finalPos.xy, finalPos.z);
     }
     float gamma_scale = finalPos.w;
     gl_Position = finalPos;
 
-    vec2 fade_opacity = unpack_opacity(a_fade_opacity);
-    float visibility = calculate_visibility(projectedPoint);
-    float fade_change = fade_opacity[1] > 0.5 ? u_fade_change : -u_fade_change;
-    float interpolated_fade_opacity = max(0.0, min(visibility, fade_opacity[0] + fade_change));
-
     v_data0 = a_tex / u_texsize;
-    v_data1 = vec3(gamma_scale, size, interpolated_fade_opacity);
+    v_data1 = vec3(gamma_scale, size, total_opacity);
 }

@@ -133,6 +133,26 @@ describe('Style.loadURL', () => {
         expect(spy.mock.calls[0][1]).toBe('Style');
     });
 
+    test('can asynchronously transform style request', async () => {
+        server.respondWith('style.json', JSON.stringify(createStyleJSON()));
+
+        const map = getStubMap();
+        map._requestManager.transformRequest = async (url, type) => ({
+            url,
+            type,
+            headers: {Authorization: 'Bearer token'}
+        });
+
+        const style = new Style(map);
+        style.loadURL('style.json');
+        await sleep(0);
+        server.respond();
+        await waitForEvent(style, 'data', (event) => event.dataType === 'style');
+
+        expect(server.requests[0].url).toBe('style.json');
+        expect(server.requests[0].requestHeaders.Authorization).toBe('Bearer token');
+    });
+
     test('validates the style', async () => {
         const style = new Style(getStubMap());
 
@@ -140,6 +160,7 @@ describe('Style.loadURL', () => {
 
         style.loadURL('style.json');
         server.respondWith(JSON.stringify(createStyleJSON({version: 'invalid'})));
+        await sleep(0);
         server.respond();
 
         const {error} = await errorPromise;
@@ -147,9 +168,10 @@ describe('Style.loadURL', () => {
         expect(error.message).toMatch(/version/);
     });
 
-    test('cancels pending requests if removed', () => {
+    test('cancels pending requests if removed', async () => {
         const style = new Style(getStubMap());
         style.loadURL('style.json');
+        await sleep(0);
         style._remove();
         expect((server.lastRequest as any).aborted).toBe(true);
     });
@@ -173,6 +195,7 @@ describe('Style.loadURL', () => {
         const promise = style.once('error');
         style.loadURL('style.json');
         server.respondWith(request => request.respond(errorStatus));
+        await sleep(0);
         server.respond();
         const {error} = await promise;
 
@@ -253,6 +276,7 @@ describe('Style.loadJSON', () => {
         expect(e.dataType).toBe('style');
 
         const promise = style.once('data');
+        await sleep(0);
         server.respond();
 
         await promise;
@@ -286,6 +310,7 @@ describe('Style.loadJSON', () => {
 
         const secondDataPromise = style.once('data');
 
+        await sleep(0);
         server.respond();
 
         const secondDateEvent = await secondDataPromise;
@@ -366,7 +391,7 @@ describe('Style.loadJSON', () => {
         expect(transformSpy.mock.calls[1][1]).toBe('SpriteImage');
     });
 
-    test('emits an error on non-existant vector source layer', async () => {
+    test('emits an error on non-existent vector source layer', async () => {
         const style = createStyle();
         style.loadJSON(createStyleJSON({
             sources: {
@@ -884,7 +909,7 @@ describe('Style.setState', () => {
         const style = createStyle();
         const styleJson = createStyleJSON();
         style.loadJSON(styleJson);
-        
+
         await style.once('style.load');
 
         const newStyleJSON: StyleSpecification = {
@@ -1077,6 +1102,33 @@ describe('Style.setState', () => {
         const didChange = style.setState(nextState, {validate: false});
 
         expect(didChange).toBeTruthy();
+    });
+
+    test('setState does not crash when target style has no projection', async () => {
+        const style = createStyle();
+        const initialStyle = createStyleJSON({
+            projection: {type: 'globe'}
+        });
+        style.loadJSON(initialStyle);
+        await style.once('style.load');
+
+        const targetStyle = createStyleJSON();
+        expect(() => style.setState(targetStyle)).not.toThrow();
+    });
+
+    test('setState preserves serialized style when target has no projection', async () => {
+        const style = createStyle();
+        const initialStyle = createStyleJSON({
+            projection: {type: 'globe'}
+        });
+        style.loadJSON(initialStyle);
+        await style.once('style.load');
+
+        const targetStyle = createStyleJSON();
+        style.setState(targetStyle);
+
+        const serialized = style.serialize();
+        expect(serialized).not.toHaveProperty('projection');
     });
 });
 
@@ -1401,6 +1453,7 @@ describe('Style.addSprite', () => {
         style.on('error', errorHandler);
 
         style.addSprite('test', 'https://example.com/sprite');
+        await sleep(0);
         style._remove();
 
         await waitForEvent(style, 'data', (event) => event.dataType === 'style');
@@ -1502,6 +1555,7 @@ describe('Style.setSprite', () => {
 
         const errorPromise = style.once('error');
         style.setSprite('https://example.com/sprite');
+        await sleep(0);
         server.respond();
 
         const {error} = await errorPromise;
@@ -2095,7 +2149,7 @@ describe('Style.addLayer', () => {
         expect(e.mapLibre).toBeTruthy();
     });
 
-    test('throws on non-existant vector source layer', async () => {
+    test('throws on non-existent vector source layer', async () => {
         const style = createStyle();
         style.loadJSON(createStyleJSON({
             sources: {
@@ -2337,7 +2391,7 @@ describe('Style.addLayer', () => {
         expect(error.message).toMatch(/Cannot add layer "c" before non-existing layer "z"./);
     });
 
-    test('fires an error on non-existant source layer', async () => {
+    test('fires an error on non-existent source layer', async () => {
         const style = new Style(getStubMap());
         style.loadJSON(extend(createStyleJSON(), {
             sources: {
@@ -2840,9 +2894,9 @@ describe('Style.setFilter', () => {
 
         await style.once('style.load');
         const promise = style.once('error');
-        style.setFilter('non-existant', ['==', 'id', 1]);
+        style.setFilter('non-existent', ['==', 'id', 1]);
         const {error} = await promise;
-        expect(error.message).toMatch(/Cannot filter non-existing layer "non-existant"./);
+        expect(error.message).toMatch(/Cannot filter non-existing layer "non-existent"./);
     });
 
     test('validates filter by default', async () => {
@@ -2910,9 +2964,9 @@ describe('Style.setLayerZoomRange', () => {
         const style = createStyle();
         await style.once('style.load');
         const promise = style.once('error');
-        style.setLayerZoomRange('non-existant', 5, 12);
+        style.setLayerZoomRange('non-existent', 5, 12);
         const {error} = await promise;
-        expect(error.message).toMatch(/Cannot set the zoom range of non-existing layer "non-existant"./);
+        expect(error.message).toMatch(/Cannot set the zoom range of non-existing layer "non-existent"./);
     });
 
     test('does not reload raster source', async () => {
@@ -3416,6 +3470,21 @@ describe('Style.serialize', () => {
 
         expect(style.serialize().projection).toBeDefined();
         expect(style.serialize().projection.type).toBe('globe');
+    });
+
+    test('include projection property when projection is set to mercator', async () => {
+        const style = new Style(getStubMap());
+        style.loadJSON(createStyleJSON());
+
+        await style.once('style.load');
+        expect(style.getProjection()).toBeUndefined();
+
+        style.setProjection({type: 'mercator'});
+
+        expect(style.getProjection()).toBeDefined();
+        expect(style.getProjection().type).toBe('mercator');
+        expect(style.serialize().projection).toBeDefined();
+        expect(style.serialize().projection.type).toBe('mercator');
     });
 
     test('include sky property when map has sky', async () => {
