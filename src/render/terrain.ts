@@ -100,12 +100,29 @@ export class Terrain {
      */
     qualityFactor: number;
     /**
-     * holds the framebuffer object in size of the screen to render the coords & depth into a texture.
+     * holds the framebuffer object in size of the screen to render the coords into a texture.
      */
     _fbo: Framebuffer;
     _fboCoordsTexture: Texture;
-    _fboDepthTexture: Texture;
+    /**
+     * Separate framebuffer for the depth pass, using a native DEPTH_COMPONENT32F texture.
+     */
+    _depthFbo: Framebuffer;
+    /**
+     * Native WebGL2 depth texture (DEPTH_COMPONENT32F) attached to _depthFbo.
+     * Sampled directly in shaders via u_depth.
+     */
+    _fboDepthTexture: WebGLTexture;
+    /**
+     * R32F color texture attached to _depthFbo for CPU readback in depthAtPoint().
+     */
+    _fboDepthColorTexture: WebGLTexture;
     _emptyDepthTexture: Texture;
+    /** PBO for async depth readback. Avoids GPU pipeline stalls from synchronous readPixels. */
+    _depthPbo: WebGLBuffer | null = null;
+    _depthReadbackSync: WebGLSync | null = null;
+    _depthReadbackResult: number = 0;
+    _depthReadbackBuffer: Float32Array = new Float32Array(1);
     /**
      * GL Objects for the terrain-mesh
      * The mesh is a regular mesh, which has the advantage that it can be reused for all tiles.
@@ -150,6 +167,7 @@ export class Terrain {
     }
 
     destroy() {
+        const gl = this.painter.context.gl as WebGL2RenderingContext;
         if (this._fbo) {
             this._fbo.destroy();
             this._fbo = null;
@@ -158,9 +176,25 @@ export class Terrain {
             this._fboCoordsTexture.destroy();
             this._fboCoordsTexture = null;
         }
+        if (this._depthFbo) {
+            this._depthFbo.destroy();
+            this._depthFbo = null;
+        }
         if (this._fboDepthTexture) {
-            this._fboDepthTexture.destroy();
+            gl.deleteTexture(this._fboDepthTexture);
             this._fboDepthTexture = null;
+        }
+        if (this._fboDepthColorTexture) {
+            gl.deleteTexture(this._fboDepthColorTexture);
+            this._fboDepthColorTexture = null;
+        }
+        if (this._depthPbo) {
+            gl.deleteBuffer(this._depthPbo);
+            this._depthPbo = null;
+        }
+        if (this._depthReadbackSync) {
+            gl.deleteSync(this._depthReadbackSync);
+            this._depthReadbackSync = null;
         }
         if (this._emptyDemTexture) {
             this._emptyDemTexture.destroy();
@@ -307,7 +341,7 @@ export class Terrain {
             'u_terrain_unpack': sourceTile?.dem?.getUnpackVector() || this._emptyDemUnpack,
             'u_terrain_exaggeration': this.exaggeration,
             texture: (sourceTile?.demTexture || this._emptyDemTexture).texture,
-            depthTexture: (this._fboDepthTexture || this._emptyDepthTexture).texture,
+            depthTexture: this._fboDepthTexture || this._emptyDepthTexture.texture,
             tile: sourceTile
         };
     }
@@ -317,32 +351,107 @@ export class Terrain {
      * @param texture - the texture
      * @returns the frame buffer
      */
-    getFramebuffer(texture: string): Framebuffer {
+    getFramebuffer(texture: 'depth' | 'coords'): Framebuffer {
         const painter = this.painter;
         const width = painter.width / devicePixelRatio;
         const height = painter.height / devicePixelRatio;
+
+        if (texture === 'depth') {
+            return this._getDepthFramebuffer(width, height);
+        }
+
+        // Coords framebuffer
         if (this._fbo && (this._fbo.width !== width || this._fbo.height !== height)) {
             this._fbo.destroy();
             this._fboCoordsTexture.destroy();
-            this._fboDepthTexture.destroy();
             delete this._fbo;
-            delete this._fboDepthTexture;
             delete this._fboCoordsTexture;
         }
         if (!this._fboCoordsTexture) {
             this._fboCoordsTexture = new Texture(painter.context, {width, height, data: null}, painter.context.gl.RGBA, {premultiply: false});
             this._fboCoordsTexture.bind(painter.context.gl.NEAREST, painter.context.gl.CLAMP_TO_EDGE);
         }
-        if (!this._fboDepthTexture) {
-            this._fboDepthTexture = new Texture(painter.context, {width, height, data: null}, painter.context.gl.RGBA, {premultiply: false});
-            this._fboDepthTexture.bind(painter.context.gl.NEAREST, painter.context.gl.CLAMP_TO_EDGE);
-        }
         if (!this._fbo) {
             this._fbo = painter.context.createFramebuffer(width, height, true, false);
             this._fbo.depthAttachment.set(painter.context.createRenderbuffer(painter.context.gl.DEPTH_COMPONENT16, width, height));
         }
-        this._fbo.colorAttachment.set(texture === 'coords' ? this._fboCoordsTexture.texture : this._fboDepthTexture.texture);
+        this._fbo.colorAttachment.set(this._fboCoordsTexture.texture);
         return this._fbo;
+    }
+
+    /**
+     * Create and return the depth framebuffer using native WebGL2 depth textures.
+     * Uses DEPTH_COMPONENT32F for the depth attachment (sampled in shaders)
+     * and R32F for the color attachment (used for CPU readback in depthAtPoint).
+     */
+    private _getDepthFramebuffer(width: number, height: number): Framebuffer {
+        const painter = this.painter;
+        const gl = painter.context.gl as WebGL2RenderingContext;
+
+        // Destroy and recreate if size changed
+        if (this._depthFbo && (this._depthFbo.width !== width || this._depthFbo.height !== height)) {
+            this._depthFbo.destroy();
+            gl.deleteTexture(this._fboDepthTexture);
+            gl.deleteTexture(this._fboDepthColorTexture);
+            this._depthFbo = null;
+            this._fboDepthTexture = null;
+            this._fboDepthColorTexture = null;
+        }
+
+        if (!this._depthFbo) {
+            // Create native DEPTH_COMPONENT32F depth texture
+            const depthTexture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, depthTexture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT32F, width, height, 0, gl.DEPTH_COMPONENT, gl.FLOAT, null);
+            this._fboDepthTexture = depthTexture;
+
+            // Create R32F color texture for CPU readback
+            const colorTexture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, colorTexture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, width, height, 0, gl.RED, gl.FLOAT, null);
+            this._fboDepthColorTexture = colorTexture;
+
+            // Create FBO without built-in depth (we attach manually)
+            const fbo = gl.createFramebuffer();
+            painter.context.bindFramebuffer.set(fbo);
+
+            // Attach depth texture
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, depthTexture, 0);
+
+            // Attach R32F color texture
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colorTexture, 0);
+
+            painter.context.bindFramebuffer.set(null);
+
+            // Wrap in a Framebuffer-like object
+            this._depthFbo = {
+                framebuffer: fbo,
+                width,
+                height,
+                colorAttachment: {
+                    get: () => colorTexture,
+                    set: () => { /* fixed attachment */ },
+                    setDirty: () => { /* no-op */ },
+                },
+                depthAttachment: {
+                    get: () => null,
+                    set: () => { /* depth is a texture, not a renderbuffer */ },
+                },
+                destroy: () => {
+                    gl.deleteFramebuffer(fbo);
+                },
+            } as any as Framebuffer;
+        }
+
+        return this._depthFbo;
     }
 
     /**
@@ -411,19 +520,51 @@ export class Terrain {
     }
 
     /**
-     * Reads the depth value from the depth-framebuffer at a given screen pixel
+     * Reads the depth value from the depth-framebuffer at a given screen pixel.
+     * Uses PBO + fenceSync for async readback: returns the previous frame's result
+     * immediately while issuing a new non-blocking read for the current frame.
+     * The 1-frame latency is acceptable since marker occlusion is throttled to 100ms.
      * @param p - Screen coordinate
-     * @returns depth value in clip space (between 0 and 1)
+     * @returns depth value in NDC space (gl_Position.z / gl_Position.w)
      */
-
     depthAtPoint(p: Point): number {
-        const rgba = new Uint8Array(4);
-        const context = this.painter.context, gl = context.gl;
+        const context = this.painter.context;
+        const gl = context.gl as WebGL2RenderingContext;
+
+        // Collect previous async readback if ready
+        if (this._depthReadbackSync) {
+            const status = gl.clientWaitSync(this._depthReadbackSync, 0, 0);
+            if (status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED) {
+                gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._depthPbo);
+                gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this._depthReadbackBuffer);
+                gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+                this._depthReadbackResult = this._depthReadbackBuffer[0] * 2.0 - 1.0;
+                gl.deleteSync(this._depthReadbackSync);
+                this._depthReadbackSync = null;
+            }
+        }
+
+        // Issue new async readback via PBO
+        if (!this._depthPbo) {
+            this._depthPbo = gl.createBuffer();
+            gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._depthPbo);
+            gl.bufferData(gl.PIXEL_PACK_BUFFER, 4, gl.STREAM_READ);
+            gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        }
+
         context.bindFramebuffer.set(this.getFramebuffer('depth').framebuffer);
-        gl.readPixels(p.x, this.painter.height / devicePixelRatio - p.y - 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this._depthPbo);
+        gl.readPixels(p.x, this.painter.height / devicePixelRatio - p.y - 1, 1, 1, gl.RED, gl.FLOAT, 0);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
         context.bindFramebuffer.set(null);
-        // decode coordinates (encoding see terran_depth.fragment.glsl)
-        return (rgba[0] / (256 * 256 * 256) + rgba[1] / (256 * 256) + rgba[2] / 256 + rgba[3]) / 256;
+
+        if (this._depthReadbackSync) {
+            gl.deleteSync(this._depthReadbackSync);
+        }
+        this._depthReadbackSync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        gl.flush();
+
+        return this._depthReadbackResult;
     }
 
     /**

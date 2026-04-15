@@ -96,20 +96,15 @@ uniform float u_terrain_exaggeration;
 uniform highp sampler2D u_depth;
 #endif
 
-// methods for pack/unpack depth value to texture rgba
-// https://stackoverflow.com/questions/34963366/encode-floating-point-data-in-a-rgba-texture
-const highp vec4 bitSh = vec4(256. * 256. * 256., 256. * 256., 256., 1.);
-const highp vec4 bitShifts = vec4(1.) / bitSh;
-
-highp float unpack(highp vec4 color) {
-   return dot(color , bitShifts);
-}
-
 // calculate the opacity behind terrain, returns a value between 0 and 1.
 highp float depthOpacity(vec3 frag) {
     #ifdef TERRAIN3D
-        // create the delta between frag.z + terrain.z.
-        highp float d = unpack(texture(u_depth, frag.xy * 0.5 + 0.5)) + 0.0001 - frag.z;
+        // Sample the native depth texture directly (value in [0, 1] range).
+        highp float terrainDepth = texture(u_depth, frag.xy * 0.5 + 0.5).r;
+        // Map frag.z from NDC [-1, 1] to depth [0, 1] range to match.
+        highp float fragDepth = frag.z * 0.5 + 0.5;
+        // Create the delta between terrain depth and fragment depth.
+        highp float d = terrainDepth + 0.0001 - fragDepth;
         // visibility range is between 0 and 0.002. 0 is visible, 0.002 is fully invisible.
         return 1.0 - max(0.0, min(1.0, -d * 500.0));
     #else

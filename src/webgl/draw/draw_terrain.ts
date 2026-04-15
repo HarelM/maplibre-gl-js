@@ -23,6 +23,7 @@ function drawDepth(painter: Painter, terrain: Terrain) {
     const program = painter.useProgram('terrainDepth');
     context.bindFramebuffer.set(terrain.getFramebuffer('depth').framebuffer);
     context.viewport.set([0, 0, painter.width  / devicePixelRatio, painter.height / devicePixelRatio]);
+    // Clear both the native depth buffer and the R32F color attachment
     context.clear({color: Color.transparent, depth: 1});
     for (const tile of tiles) {
         const mesh = terrain.getTerrainMesh(tile.tileID);
