@@ -3,7 +3,7 @@ import puppeteer from 'puppeteer';
 import PDFMerger from 'pdf-merger-js';
 import minimist from 'minimist';
 
-const argv = minimist(process.argv.slice(2));
+const argv = minimist(process.argv.slice(2), {boolean: ['gpu', 'profile']});
 
 const formatTime = (v) => {
     if (typeof v === 'number' && !isNaN(v)) {
@@ -39,7 +39,22 @@ if (argv.compare !== true && argv.compare !== undefined) { // handle --compare w
 
 console.log(`Starting headless chrome at: ${url.toString()}`);
 
-const browser = await puppeteer.launch({headless: true});
+const gpuArgs = argv.gpu ? [
+    '--no-sandbox',
+    '--enable-gpu',
+    '--ignore-gpu-blocklist',
+    '--disable-software-rasterizer',
+    '--enable-features=Vulkan',
+    '--use-vulkan',
+    '--use-angle=vulkan',
+] : [];
+
+const browser = await puppeteer.launch({
+    headless: true,
+    executablePath: argv.gpu ? '/usr/bin/google-chrome' : undefined,
+    args: gpuArgs,
+    protocolTimeout: 0,
+});
 
 try {
 
@@ -109,6 +124,91 @@ try {
     }
 
     await merger.save(`${dir}/all.pdf`);
+
+    // CPU profiling mode: re-setup the last benchmark, then profile
+    // its render loop using V8's sampling profiler via CDP.
+    if (argv.profile && toRun.length > 0) {
+        const profileTarget = toRun[toRun.length - 1];
+        const profileRenders = 500;
+        console.log(`\nProfiling ${profileTarget} (${profileRenders} renders)...`);
+
+        // Navigate to the benchmark and wait for it to finish (which runs setup)
+        url.hash = profileTarget;
+        await webPage.goto(url.toString());
+        await webPage.reload();
+        await webPage.waitForFunction(
+            () => (window as any).maplibreglBenchmarkFinished,
+            {polling: 200, timeout: 0}
+        );
+
+        // Re-setup: create a fresh benchmark instance and run its setup
+        await webPage.evaluate(async (name) => {
+            const benchmarks = (window as any).maplibreglBenchmarks[name];
+            const currentVersion = Object.keys(benchmarks).pop();
+            const BenchClass = benchmarks[currentVersion].constructor;
+            const instance = new BenchClass();
+            await instance.setup();
+            (window as any)._profileBench = instance;
+        }, profileTarget);
+
+        // Wait for everything to settle
+        await new Promise(r => setTimeout(r, 3000));
+
+        // Start V8 CPU profiler
+        const client = await webPage.createCDPSession();
+        await client.send('Profiler.enable');
+        await client.send('Profiler.setSamplingInterval', {interval: 10});
+        await client.send('Profiler.start');
+
+        // Run bench() in a tight synchronous loop
+        await webPage.evaluate((count) => {
+            const bench = (window as any)._profileBench;
+            for (let i = 0; i < count; i++) {
+                bench.bench();
+            }
+        }, profileRenders);
+
+        const {profile} = await client.send('Profiler.stop');
+
+        // Teardown
+        await webPage.evaluate(() => {
+            (window as any)._profileBench?.teardown?.();
+            delete (window as any)._profileBench;
+        });
+
+        // Parse profile: compute self time per function from samples + deltas
+        const nodes = {};
+        for (const node of profile.nodes) nodes[node.id] = node;
+
+        const selfTime: {[key: string]: number} = {};
+        for (let i = 0; i < profile.samples.length; i++) {
+            const delta = profile.timeDeltas[i];
+            const node = nodes[profile.samples[i]];
+            const fn = node.callFrame;
+            const fnName = fn.functionName || '(anonymous)';
+            const fnUrl = fn.url ? fn.url.split('/').pop() : '';
+            const key = fnName + (fnUrl ? ` (${fnUrl}:${fn.lineNumber})` : '');
+            selfTime[key] = (selfTime[key] || 0) + delta / 1000;
+        }
+
+        const sorted = Object.entries(selfTime)
+            .filter(([name]) => name !== '(idle)' && name !== '(program)')
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 30);
+
+        const totalTime = (profile.endTime - profile.startTime) / 1000;
+        const idleTime = selfTime['(idle)'] || 0;
+        const activeTime = totalTime - idleTime;
+
+        console.log(`\n${profileRenders} renders in ${activeTime.toFixed(0)} ms (${(activeTime / profileRenders).toFixed(2)} ms/render)`);
+        console.log(`\nTop 30 functions by self time:`);
+        console.log(`${'Self(ms)'.padStart(10)} ${'%'.padStart(6)} ${'Per render'.padStart(12)}  Function`);
+        for (const [fnName, ms] of sorted) {
+            const pct = (ms / activeTime * 100).toFixed(1);
+            const perRender = (ms / profileRenders).toFixed(3);
+            console.log(`${ms.toFixed(1).padStart(10)} ${pct.padStart(6)} ${(perRender + ' ms').padStart(12)}  ${fnName}`);
+        }
+    }
 } catch (error) {
     if (error.message.startsWith('net::ERR_CONNECTION_REFUSED')) {
         console.log('Could not connect to server. Please run \'npm run start-bench\'.');

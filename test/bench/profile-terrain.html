@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head><style>body{margin:0;font-family:monospace}#map{width:1024px;height:768px}#stats{position:absolute;top:10px;right:10px;background:rgba(0,0,0,.8);color:#0f0;padding:10px;font-size:13px;z-index:999;white-space:pre}</style></head>
+<body>
+<div id="map"></div>
+<div id="stats">Loading...</div>
+<script src="../../dist/maplibre-gl-dev.js"></script>
+<script>
+var map = new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/liberty',center:[10.5,46.9],zoom:12,pitch:60});
+window.map = map;
+map.on('load',function(){map.addSource('terrain-dem',{type:'raster-dem',url:'https://tiles.mapterhorn.com/tilejson.json'});map.setTerrain({source:'terrain-dem',exaggeration:1.5});});
+
+// Wait for full idle, then signal ready for profiling
+window.readyToProfile = false;
+map.on('idle', function() {
+    // Wait extra 3s after idle to ensure all background work is done
+    setTimeout(function() {
+        window.readyToProfile = true;
+    }, 3000);
+});
+
+// Called from puppeteer to do profiled renders
+window.doProfiledRenders = function(count) {
+    var bearing = 0;
+    for (var i = 0; i < count; i++) {
+        bearing = (bearing + 0.5) % 360;
+        map.setBearing(bearing);
+        map._render();
+    }
+};
+</script>
+</body></html>
