@@ -160,28 +160,31 @@ export class RenderToTexture {
         if (LAYERS_TO_TEXTURES[this._prevType] || (LAYERS_TO_TEXTURES[type] && isLastLayer)) {
             this._prevType = type;
             const stack = this._stacks.length - 1, layers = this._stacks[stack] || [];
+            const rttTimer = painter.gpuTimer;
+            let rttRendered = 0, rttCached = 0;
+            rttTimer.start('rtt_layers');
             for (const tile of this._renderableTiles) {
-                // if render pool is full draw current tiles to screen and free pool
                 if (this.pool.isFull()) {
+                    rttTimer.start('terrain_composite');
                     drawTerrain(this.painter, this.terrain, this._rttTiles, options);
+                    rttTimer.end();
                     this._rttTiles = [];
                     this.pool.freeAllObjects();
                 }
                 this._rttTiles.push(tile);
-                // check for cached PoolObject
                 if (tile.rtt[stack]) {
                     const obj = this.pool.getObjectForId(tile.rtt[stack].id);
                     if (obj.stamp === tile.rtt[stack].stamp) {
                         this.pool.useObject(obj);
+                        rttCached++;
                         continue;
                     }
                 }
-                // get free PoolObject
+                rttRendered++;
                 const obj = this.pool.getOrCreateFreeObject();
                 this.pool.useObject(obj);
                 this.pool.stampObject(obj);
                 tile.rtt[stack] = {id: obj.id, stamp: obj.stamp};
-                // prepare PoolObject for rendering
                 painter.context.bindFramebuffer.set(obj.fbo.framebuffer);
                 painter.context.clear({color: Color.transparent, stencil: 0});
                 painter.currentStencilSource = undefined;
@@ -189,12 +192,20 @@ export class RenderToTexture {
                     const layer = painter.style._layers[layerId];
                     const coords = layer.source ? this._coordsAscending[layer.source][tile.tileID.key] : [tile.tileID];
                     painter.context.viewport.set([0, 0, obj.fbo.width, obj.fbo.height]);
+                    rttTimer.start(`rtt_${layer.type}`);
                     painter._renderTileClippingMasks(layer, coords, true);
                     painter.renderLayer(painter, painter.style.tileManagers[layer.source], layer, coords, options);
+                    rttTimer.end();
                     if (layer.source) tile.rttFingerprint[layer.source] = this._rttFingerprints[layer.source][tile.tileID.key];
                 }
             }
+            rttTimer.end();
+            painter.gpuTimerResults['_rtt_rendered'] = rttRendered;
+            painter.gpuTimerResults['_rtt_cached'] = rttCached;
+            painter.gpuTimerResults['_rtt_layers_per_tile'] = layers.length;
+            rttTimer.start('terrain_composite');
             drawTerrain(this.painter, this.terrain, this._rttTiles, options);
+            rttTimer.end();
             this._rttTiles = [];
             this.pool.freeAllObjects();
 

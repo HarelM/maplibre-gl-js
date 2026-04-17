@@ -37,6 +37,7 @@ import type {ResolvedImage} from '@maplibre/maplibre-gl-style-spec';
 import type {IRenderToTexture} from './render_to_texture_interface';
 import type {ProjectionData} from '../geo/projection/projection_data';
 import {coveringTiles} from '../geo/projection/covering_tiles';
+import {GPUTimer, type GPUTimerResults} from '../webgl/gpu_timer';
 import {isSymbolStyleLayer} from '../style/style_layer/symbol_style_layer';
 import {isCircleStyleLayer} from '../style/style_layer/circle_style_layer';
 import {isHeatmapStyleLayer} from '../style/style_layer/heatmap_style_layer';
@@ -124,10 +125,13 @@ export class Painter {
     // of the terrain-facilitators. e.g. depth & coords framebuffers
     // every time the camera-matrix changes the terrain-facilitators will be redrawn.
     terrainFacilitator: {depthDirty: boolean; coordsDirty: boolean; matrix: mat4; renderTime: number};
+    gpuTimer: GPUTimer;
+    gpuTimerResults: GPUTimerResults = {};
 
     constructor(gl: WebGLRenderingContext | WebGL2RenderingContext, transform: IReadonlyTransform) {
         this.drawFunctions = webglDrawFunctions;
         this.context = new Context(gl);
+        this.gpuTimer = new GPUTimer(gl as WebGL2RenderingContext);
         this.transform = transform;
         this._tileTextures = {};
         this.terrainFacilitator = {depthDirty: true, coordsDirty: false, matrix: mat4.identity(new Float64Array(16) as any), renderTime: 0};
@@ -507,7 +511,10 @@ export class Painter {
             }
         }
 
+        this.gpuTimer.beginFrame();
+        this.gpuTimer.start('terrain_depth');
         this.maybeDrawDepth(false);
+        this.gpuTimer.end();
 
         if (this.renderToTexture) {
             this.renderToTexture.prepareForRender(this.style, this.transform.zoom);
@@ -567,7 +574,7 @@ export class Painter {
         }
 
         // Translucent pass ===============================================
-        // Draw all other layers bottom-to-top.
+        this.gpuTimer.start('translucent_pass');
         this.renderPass = 'translucent';
 
         let globeDepthRendered = false;
@@ -611,6 +618,9 @@ export class Painter {
         if (this.options.showPadding) {
             this.drawFunctions.debugPadding(this);
         }
+
+        this.gpuTimer.end();
+        this.gpuTimerResults = this.gpuTimer.collectResults();
 
         // Set defaults for most GL values so that anyone using the state after the render
         // encounters more expected values.
